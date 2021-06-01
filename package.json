@@ -1,0 +1,22 @@
+{
+  "name": "@jacky/html-parser",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "jest"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "fs-extra": "^10.0.0",
+    "html-to-text": "^7.1.1",
+    "moment": "^2.29.1"
+  },
+  "devDependencies": {
+    "@types/jest": "^26.0.23",
+    "eslint": "^7.27.0",
+    "eslint-config-airbnb": "^18.2.1",
+    "jest": "^27.0.3"
+  }
+}
