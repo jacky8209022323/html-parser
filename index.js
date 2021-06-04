@@ -1,6 +1,7 @@
 const fs = require('fs').promises;
 const moment = require('moment');
 const { fromString } = require('html-to-text');
+const taiwanIdValidator = require('taiwan-id-validator2');
 const { StringUtil, HTMLEnums, CasePlanObject } = require('./lib');
 
 const PLAN_ENUMS = HTMLEnums.HTMLEnums;
@@ -149,7 +150,17 @@ class HTMLParser {
     text = text.replace(/勾選後此區不列印/g, '');
     text = text.replace(PLAN_ENUMS.BUY_ASSISTIVE, '');
     let textArray = text.split(' ');
-    const CSData = new CasePlanObject();
+    const casePlanObject = new CasePlanObject();
+    const CSData = casePlanObject.caseInfo;
+
+    // 不符合長照資格，則回傳錯誤訊息
+    if (!textArray.includes(PLAN_ENUMS.LONG_CARE_QUALIFICATION)) {
+      throw new Error('此檔案格式無法支援');
+    }
+    // 不能上傳照會單，則回傳錯誤訊息
+    if (textArray.includes(PLAN_ENUMS.NOTE) && textArray.indexOf(PLAN_ENUMS.NOTE) < 10) {
+      throw new Error('此檔案格式無法支援 (請提供照顧管理評估量表，而非照會單)');
+    }
 
     // 主旨、異動摘要 Index
     const changeSummaryIndex = textArray.indexOf(PLAN_ENUMS.THEME);
@@ -264,16 +275,7 @@ class HTMLParser {
       }
     }
 
-    if (!textArray.includes(PLAN_ENUMS.LONG_CARE_QUALIFICATION)) {
-      throw new Error('此檔案格式無法支援');
-    }
-    if (textArray.includes(PLAN_ENUMS.NOTE) && textArray.indexOf(PLAN_ENUMS.NOTE) < 10) {
-      throw new Error('此檔案格式無法支援 (請提供照顧管理評估量表，而非照會單)');
-    }
-
-    const applicationDateStr = textArray[textArray.indexOf(PLAN_ENUMS.APPLICATION_DATE) + 1].split('/');
-    CSData.basicInfo.applicationDate = `${parseInt(applicationDateStr[0], 10) + 1911}-${applicationDateStr[1]}-${applicationDateStr[2]}`;
-
+    CSData.basicInfo.applicationDate = StringUtil.getDate(textArray[textArray.indexOf(PLAN_ENUMS.APPLICATION_DATE) + 1]);
     CSData.basicInfo.caretaker = textArray[textArray.indexOf(PLAN_ENUMS.UNDERTAKER) + 1];
     CSData.takeCarePlan.hasNewItem = getHtmlServiceItem(
       textArray,
@@ -289,20 +291,16 @@ class HTMLParser {
     // 個案管理照顧計畫項目
     getAUnitServiceItem(textArray, CSData.takeCarePlan.APlanItem);
 
+    // HTML內未包含規定內容
     if (typeof CSData.takeCarePlan.hasNewItem === 'string') {
       throw new Error('個案匯入/更新失敗, HTML內未包含規定內容');
     }
 
-    const handleTimeStr = textArray[textArray.indexOf(PLAN_ENUMS.PROCESS_TIME) + 1].split('/');
-    const handleTime = moment(`${parseInt(handleTimeStr[0], 10) + 1911}-${handleTimeStr[1]}-${handleTimeStr[2]}`, dateFormat).toDate();
-    CSData.basicInfo.handleTime = handleTime;
-    CSData.basicInfo.eligibility = textArray[textArray.indexOf(PLAN_ENUMS.LONG_CARE_QUALIFICATION) + 1];
-    CSData.basicInfo.customer.personalId = textArray[textArray.indexOf(PLAN_ENUMS.PERSONAL_ID) + 1];
-    const foreign = textArray[textArray.indexOf(PLAN_ENUMS.PERSONAL_ID) + 2];
-    if (/外籍/.test(foreign) && /checkbox_checked/.test(foreign)) {
-      CSData.basicInfo.customer.foreign = true;
-    }
     CSData.basicInfo.customer.name = textArray[textArray.indexOf(PLAN_ENUMS.NAME) + 2];
+    // 檢查個案姓名是否為空
+    if (!CSData.basicInfo.customer.name) {
+      throw new Error('個案姓名為空');
+    }
     const nameIndex = textArray.indexOf(PLAN_ENUMS.TRADITIONAL_NAME);
     if (nameIndex !== -1) {
       const origName = textArray[nameIndex + 2];
@@ -310,24 +308,44 @@ class HTMLParser {
         CSData.basicInfo.customer.name += `(${origName})`;
       }
     }
+    CSData.basicInfo.customer.gender = textArray[textArray.indexOf(PLAN_ENUMS.GENDER) + 1];
+    // 檢查個案性別是否為空
+    if (!CSData.basicInfo.customer.gender) {
+      throw new Error('個案性別為空');
+    }
+    CSData.basicInfo.customer.birthday = StringUtil.getDate(textArray[textArray.indexOf(PLAN_ENUMS.BIRTHDAY) + 1]);
+    // 檢查個案生日日期格式是否正確
+    if (!CSData.basicInfo.customer.birthday) {
+      throw new Error('個案生日格式有誤');
+    }
+    CSData.basicInfo.customer.personalId = textArray[textArray.indexOf(PLAN_ENUMS.PERSONAL_ID) + 1];
+    // 檢查身份證字號是否為空
+    if (!CSData.basicInfo.customer.personalId) {
+      throw new Error('個案身份證字號格式有誤');
+    }
+    // 檢查身份證字號是否為本國籍格式
+    if (!taiwanIdValidator.isNationalIdentificationNumberValid(CSData.basicInfo.customer.personalId)) {
+      throw new Error('個案身份證字號格式有誤');
+    }
+
+    const handleTimeStr = textArray[textArray.indexOf(PLAN_ENUMS.PROCESS_TIME) + 1].split('/');
+    const handleTime = moment(`${parseInt(handleTimeStr[0], 10) + 1911}-${handleTimeStr[1]}-${handleTimeStr[2]}`, dateFormat).toDate();
+    CSData.basicInfo.handleTime = handleTime;
+    CSData.basicInfo.eligibility = textArray[textArray.indexOf(PLAN_ENUMS.LONG_CARE_QUALIFICATION) + 1];
+    const foreign = textArray[textArray.indexOf(PLAN_ENUMS.PERSONAL_ID) + 2];
+    if (/外籍/.test(foreign) && /checkbox_checked/.test(foreign)) {
+      CSData.basicInfo.customer.foreign = true;
+    }
     CSData.basicInfo.customer.phone = '';
     for (let i = textArray.indexOf(PLAN_ENUMS.PHONE) + 1; i < textArray.indexOf(PLAN_ENUMS.NAME); i++) {
       CSData.basicInfo.customer.phone += textArray[i] || '';
     }
-
-    const birthStr = textArray[textArray.indexOf(PLAN_ENUMS.BIRTHDAY) + 1].split('/');
-    const birthDay = `${parseInt(birthStr[0], 10) + 1911}-${birthStr[1]}-${birthStr[2]}`;
-    CSData.basicInfo.customer.birthday = birthDay;
-    CSData.basicInfo.customer.aboriginalIdentity = textArray[textArray.indexOf(PLAN_ENUMS.ABORIGINAL_IDENTITY) + 1];
-    if (CSData.basicInfo.customer.aboriginalIdentity === PLAN_ENUMS.NO) {
-      CSData.basicInfo.customer.aboriginalIdentity = null;
+    if (textArray[textArray.indexOf(PLAN_ENUMS.ABORIGINAL_IDENTITY) + 1] !== PLAN_ENUMS.NO) {
+      CSData.basicInfo.customer.aboriginalIdentity = textArray[textArray.indexOf(PLAN_ENUMS.ABORIGINAL_IDENTITY) + 1];
     }
-    if (textArray[textArray.indexOf(PLAN_ENUMS.ABORIGINAL_RACE) + 1] === '') {
-      CSData.basicInfo.customer.aboriginalRace = null;
-    } else {
+    if (textArray[textArray.indexOf(PLAN_ENUMS.ABORIGINAL_RACE) + 1] !== '') {
       CSData.basicInfo.customer.aboriginalRace = textArray[textArray.indexOf(PLAN_ENUMS.ABORIGINAL_RACE) + 1];
     }
-    CSData.basicInfo.customer.gender = textArray[textArray.indexOf(PLAN_ENUMS.GENDER) + 1];
     const bmiIndex = textArray.indexOf(PLAN_ENUMS.BMI);
     const bmi = textArray[bmiIndex + 1];
     const bmi2 = textArray[bmiIndex + 2];
@@ -398,11 +416,11 @@ class HTMLParser {
     }
     CSData.basicInfo.customer.level = planUpdateCustomerLevel || customerLevel;
 
-    CSData.basicInfo.customer.employment = textArray[textArray.indexOf(PLAN_ENUMS.EMPLOYMENT) + 1];
-    CSData.basicInfo.customer.employmentIntention = textArray[textArray.indexOf(PLAN_ENUMS.EMPLOYMENT_INTENTION) + 1];
+    CSData.basicInfo.customer.employment = getImportHtmlData(textArray, PLAN_ENUMS.EMPLOYMENT, PLAN_ENUMS.EMPLOYMENT_INTENTION);
+    CSData.basicInfo.customer.employmentIntention = getImportHtmlData(textArray, PLAN_ENUMS.EMPLOYMENT_INTENTION, PLAN_ENUMS.CURRENT_LIVING_INSTITUTION);
     CSData.basicInfo.customer.hospitalized = textArray[textArray.indexOf(PLAN_ENUMS.HOSPITALIZED) + 1];
     CSData.basicInfo.customer.hireCare = textArray[textArray.indexOf(PLAN_ENUMS.HIRE_CARE) + 1];
-    CSData.basicInfo.customer.hireCareNum = textArray[textArray.indexOf(PLAN_ENUMS.HIRE_CARE_NUM) + 1];
+    CSData.basicInfo.customer.hireCareNum = parseInt(textArray[textArray.indexOf(PLAN_ENUMS.HIRE_CARE_NUM) + 1], 10);
     if (textArray[textArray.indexOf(PLAN_ENUMS.DISEASE) + 1] === PLAN_ENUMS.YES) {
       CSData.basicInfo.customer.disease = textArray[textArray.indexOf(PLAN_ENUMS.DISEASE) + 2].slice(6);
     } else {
@@ -534,9 +552,9 @@ class HTMLParser {
       } else {
         CSData.takeCarePlan.CMSLevel = cms;
         const bundledText = textArray[bundledIndex + 3];
-        CSData.takeCarePlan.bundled.quota = StringUtil.getMatchText(bundledText, /\d+/g);
-        CSData.takeCarePlan.bundled.allowance = StringUtil.getMatchText(bundledText, /\d+/g, 1);
-        CSData.takeCarePlan.bundled.pays = StringUtil.getMatchText(bundledText, /\d+/g, 3);
+        CSData.takeCarePlan.bundled.quota = parseInt(StringUtil.getMatchText(bundledText, /\d+/g), 10);
+        CSData.takeCarePlan.bundled.allowance = parseInt(StringUtil.getMatchText(bundledText, /\d+/g, 1), 10);
+        CSData.takeCarePlan.bundled.pays = parseInt(StringUtil.getMatchText(bundledText, /\d+/g, 3), 10);
         CSData.takeCarePlan.bundled.priceType = textArray[textArray.indexOf(PLAN_ENUMS.PRICE_CATEGORY) + 1];
         CSData.takeCarePlan.bundled.workerCare = getImportHtmlData(textArray, PLAN_ENUMS.ALLOWANCE, PLAN_ENUMS.INTERFACE_NOTE);
         break;
@@ -547,9 +565,9 @@ class HTMLParser {
         textArray.splice(index, 1);
       } else {
         const bundledGText = textArray[index + 3];
-        CSData.takeCarePlan.bundledG.quota = StringUtil.getMatchText(bundledGText, /\d+/g);
-        CSData.takeCarePlan.bundledG.allowance = StringUtil.getMatchText(textArray[index + 4], /\d+/g);
-        CSData.takeCarePlan.bundledG.pays = StringUtil.getMatchText(textArray[index + 4], /\d+/g, 2);
+        CSData.takeCarePlan.bundledG.quota = parseInt(StringUtil.getMatchText(bundledGText, /\d+/g), 10);
+        CSData.takeCarePlan.bundledG.allowance = parseInt(StringUtil.getMatchText(textArray[index + 4], /\d+/g), 10);
+        CSData.takeCarePlan.bundledG.pays = parseInt(StringUtil.getMatchText(textArray[index + 4], /\d+/g, 2), 10);
         break;
       }
     }
@@ -592,7 +610,7 @@ class HTMLParser {
     CSData.evaluation.helper.primaryName = textArray[textArray.indexOf(PLAN_ENUMS.HELPER_PRIMARY_NAME) + 1];
     CSData.evaluation.helper.primaryRelation = StringUtil.getMatchText(textArray[textArray.indexOf(PLAN_ENUMS.HELPER_PRIMARY_RELATION) + 1], /[^.]\D$/g);
     CSData.evaluation.helper.primaryGender = StringUtil.getMatchText(textArray[textArray.indexOf(PLAN_ENUMS.HELPER_PRIMARY_GENDER) + 1], /\D$/g);
-    CSData.evaluation.helper.primaryAge = StringUtil.getMatchText(textArray[textArray.indexOf(PLAN_ENUMS.HELPER_PRIMARY_AGE) + 1], /\d+/g);
+    CSData.evaluation.helper.primaryAge = parseInt(StringUtil.getMatchText(textArray[textArray.indexOf(PLAN_ENUMS.HELPER_PRIMARY_AGE) + 1], /\d+/g), 10);
     if (textArray[textArray.indexOf(PLAN_ENUMS.HELPER_SECONDARY_NAME) + 1] !== PLAN_ENUMS.HELPER_SECONDARY_RELATION
       && textArray[textArray.indexOf(PLAN_ENUMS.HELPER_SECONDARY_NAME) + 1] !== PLAN_ENUMS.NONE) {
       CSData.evaluation.helper.secondaryName = textArray[textArray.indexOf(PLAN_ENUMS.HELPER_SECONDARY_NAME) + 1];
@@ -757,7 +775,7 @@ class HTMLParser {
       CSData.takeCarePlan.dischargeHospital = dischargeHospital;
     }
 
-    return CSData;
+    return casePlanObject;
   }
 
   /**
