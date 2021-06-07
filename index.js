@@ -6,49 +6,54 @@ const { StringUtil, HTMLEnums, CasePlanObject } = require('./lib');
 
 const PLAN_ENUMS = HTMLEnums.HTMLEnums;
 
-const getImportHtmlData = (textArray, tag, nextTag, index = 1) => {
+const getTextByKeyword = (textArray, keyword, delimiter, index = 1) => {
   let data = '';
-  if (textArray.indexOf(tag) >= 0) {
-    data = textArray[textArray.indexOf(tag) + index];
-    data = (data === nextTag ? '' : data);
+  if (textArray.indexOf(keyword) >= 0) {
+    data = textArray[textArray.indexOf(keyword) + index];
+    data = (data === delimiter ? '' : data);
   }
   return data;
 };
 
 /**
- * 擷取html裡面服務項目
+ * 將html中的服務項目做資料轉換
  * @param {Array} textArray
- * @param {String} tag
- * @param {String} nextTag
- * @param {String} regex
- * @param {Array} arrayObj
- * @returns {boolean|string} newItem
+ * @param {String} keyword
+ * @param {String} delimiter
+ * @param {String} regexp
+ * @returns {Object} result
  */
-const getHtmlServiceItem = (textArray, tag, nextTag, regex, arrayObj) => {
-  let newItem = false;
-  let serviceItemIndex = textArray.indexOf(tag);
+const getHtmlServiceItem = (textArray, keyword, delimiter, regexp) => {
+  const result = {
+    serviceItems: [],
+    isNewItem: false,
+    msg: '',
+  };
+  let serviceItemIndex = textArray.indexOf(keyword);
   let whileCounter = 0;
 
   while ((textArray[serviceItemIndex + 1] !== PLAN_ENUMS.ITEM) && (textArray[serviceItemIndex + 2] !== PLAN_ENUMS.ITEM)) {
     whileCounter += 1;
     if (whileCounter > 1000) {
-      return `${PLAN_ENUMS.ERROR_UPLOAD_FAILED_MSG}${tag}`;
+      result.msg = `${PLAN_ENUMS.ERROR_UPLOAD_FAILED_MSG}${keyword}`
+      return result;
     }
     textArray.splice(serviceItemIndex, 1);
-    serviceItemIndex = textArray.indexOf(tag);
+    serviceItemIndex = textArray.indexOf(keyword);
   }
-  let serviceItemEndIndex = textArray.indexOf(nextTag);
+  let serviceItemEndIndex = textArray.indexOf(delimiter);
   while ((textArray[serviceItemEndIndex + 1] !== PLAN_ENUMS.ITEM) && (textArray[serviceItemEndIndex + 2] !== PLAN_ENUMS.ITEM)) {
     whileCounter += 1;
     if (whileCounter > 1000) {
-      return `${PLAN_ENUMS.ERROR_UPLOAD_FAILED_MSG}${tag}`;
+      result.msg = `${PLAN_ENUMS.ERROR_UPLOAD_FAILED_MSG}${keyword}`;
+      return result;
     }
     textArray.splice(serviceItemEndIndex, 1);
-    serviceItemEndIndex = textArray.indexOf(nextTag);
+    serviceItemEndIndex = textArray.indexOf(delimiter);
   }
   const indexArr = [];
   for (let i = serviceItemIndex + 1; i < serviceItemEndIndex; i++) {
-    if (regex.test(textArray[i])) {
+    if (regexp.test(textArray[i])) {
       indexArr.push(i);
     }
   }
@@ -64,10 +69,10 @@ const getHtmlServiceItem = (textArray, tag, nextTag, regex, arrayObj) => {
       }
     }
     if (/(10712|BA05-|BA23|BA24|BA09a)/.test(textArray[indexArr[i]])) {
-      newItem = true;
+      result.isNewItem = true;
     }
     if (numArr.length > 1) {
-      arrayObj.push({
+      result.serviceItems.push({
         item: textArray[indexArr[i]],
         price: numArr.length > 0 ? numArr[0] : 0,
         amount: numArr.length > 1 ? numArr[1] : 0,
@@ -77,7 +82,7 @@ const getHtmlServiceItem = (textArray, tag, nextTag, regex, arrayObj) => {
       });
     }
   }
-  return newItem;
+  return result;
 };
 
 const getAUnitServiceItem = (textArray, arrayObj) => {
@@ -276,27 +281,26 @@ class HTMLParser {
     }
 
     CSData.basicInfo.applicationDate = StringUtil.getDate(textArray[textArray.indexOf(PLAN_ENUMS.APPLICATION_DATE) + 1]);
-    CSData.basicInfo.caretaker = textArray[textArray.indexOf(PLAN_ENUMS.UNDERTAKER) + 1];
-    CSData.takeCarePlan.hasNewItem = getHtmlServiceItem(
-      textArray,
-      PLAN_ENUMS.CARE_PROFESSIONAL_SERVICE_MONTH,
-      PLAN_ENUMS.TRANSPORTATION,
-      /^(B|C)/,
-      CSData.takeCarePlan.bundledItem
-    );
-    getHtmlServiceItem(textArray, PLAN_ENUMS.TRANSPORTATION, PLAN_ENUMS.ASSISTIVE_SERVICE, /^D/, CSData.takeCarePlan.bundledItem);
-    getHtmlServiceItem(textArray, PLAN_ENUMS.ASSISTIVE_SERVICE, PLAN_ENUMS.RESPITE_SERVICE_YEAR, /^(E|F)/, CSData.takeCarePlan.bundledItem);
-    getHtmlServiceItem(textArray, PLAN_ENUMS.RESPITE_SERVICE_YEAR, PLAN_ENUMS.OTHER, /^G/, CSData.takeCarePlan.bundledItem);
+    CSData.basicInfo.caretaker = getTextByKeyword(textArray, PLAN_ENUMS.UNDERTAKER, PLAN_ENUMS.PROCESS_TIME);
+
+    // 整理服務項目
+    const serviceItemBC =  getHtmlServiceItem(textArray, PLAN_ENUMS.CARE_PROFESSIONAL_SERVICE_MONTH, PLAN_ENUMS.TRANSPORTATION, /^(B|C)/);
+    const serviceItemD =  getHtmlServiceItem(textArray, PLAN_ENUMS.TRANSPORTATION, PLAN_ENUMS.ASSISTIVE_SERVICE, /^D/);
+    const serviceItemEF =  getHtmlServiceItem(textArray, PLAN_ENUMS.ASSISTIVE_SERVICE, PLAN_ENUMS.RESPITE_SERVICE_YEAR, /^(E|F)/);
+    const serviceItemG =  getHtmlServiceItem(textArray, PLAN_ENUMS.RESPITE_SERVICE_YEAR, PLAN_ENUMS.OTHER, /^G/);
+
+    CSData.takeCarePlan.hasNewItem = serviceItemBC.isNewItem;
+    CSData.takeCarePlan.bundledItem = [ ...serviceItemBC.serviceItems,  ...serviceItemD.serviceItems,  ...serviceItemEF.serviceItems, ...serviceItemG.serviceItems ];
+
+    // HTML內未包含規定內容
+    if (serviceItemBC.msg) {
+      throw new Error('個案匯入/更新失敗, HTML內未包含規定內容');
+    }
 
     // 個案管理照顧計畫項目
     getAUnitServiceItem(textArray, CSData.takeCarePlan.APlanItem);
 
-    // HTML內未包含規定內容
-    if (typeof CSData.takeCarePlan.hasNewItem === 'string') {
-      throw new Error('個案匯入/更新失敗, HTML內未包含規定內容');
-    }
-
-    CSData.basicInfo.customer.name = textArray[textArray.indexOf(PLAN_ENUMS.NAME) + 2];
+    CSData.basicInfo.customer.name = getTextByKeyword(textArray, PLAN_ENUMS.NAME, PLAN_ENUMS.BIRTHDAY, 2);
     // 檢查個案姓名是否為空
     if (!CSData.basicInfo.customer.name) {
       throw new Error('個案姓名為空');
@@ -308,7 +312,7 @@ class HTMLParser {
         CSData.basicInfo.customer.name += `(${origName})`;
       }
     }
-    CSData.basicInfo.customer.gender = textArray[textArray.indexOf(PLAN_ENUMS.GENDER) + 1];
+    CSData.basicInfo.customer.gender = getTextByKeyword(textArray, PLAN_ENUMS.GENDER, PLAN_ENUMS.LIVING_SITUATION);
     // 檢查個案性別是否為空
     if (!CSData.basicInfo.customer.gender) {
       throw new Error('個案性別為空');
@@ -318,7 +322,7 @@ class HTMLParser {
     if (!CSData.basicInfo.customer.birthday) {
       throw new Error('個案生日格式有誤');
     }
-    CSData.basicInfo.customer.personalId = textArray[textArray.indexOf(PLAN_ENUMS.PERSONAL_ID) + 1];
+    CSData.basicInfo.customer.personalId = getTextByKeyword(textArray, PLAN_ENUMS.PERSONAL_ID, PLAN_ENUMS.PHONE);
     // 檢查身份證字號是否為空
     if (!CSData.basicInfo.customer.personalId) {
       throw new Error('個案身份證字號格式有誤');
@@ -331,7 +335,7 @@ class HTMLParser {
     const handleTimeStr = textArray[textArray.indexOf(PLAN_ENUMS.PROCESS_TIME) + 1].split('/');
     const handleTime = moment(`${parseInt(handleTimeStr[0], 10) + 1911}-${handleTimeStr[1]}-${handleTimeStr[2]}`, dateFormat).toDate();
     CSData.basicInfo.handleTime = handleTime;
-    CSData.basicInfo.eligibility = textArray[textArray.indexOf(PLAN_ENUMS.LONG_CARE_QUALIFICATION) + 1];
+    CSData.basicInfo.eligibility = getTextByKeyword(textArray, PLAN_ENUMS.LONG_CARE_QUALIFICATION, PLAN_ENUMS.INCONSISTENT_STATUS);
     const foreign = textArray[textArray.indexOf(PLAN_ENUMS.PERSONAL_ID) + 2];
     if (/外籍/.test(foreign) && /checkbox_checked/.test(foreign)) {
       CSData.basicInfo.customer.foreign = true;
@@ -340,11 +344,13 @@ class HTMLParser {
     for (let i = textArray.indexOf(PLAN_ENUMS.PHONE) + 1; i < textArray.indexOf(PLAN_ENUMS.NAME); i++) {
       CSData.basicInfo.customer.phone += textArray[i] || '';
     }
-    if (textArray[textArray.indexOf(PLAN_ENUMS.ABORIGINAL_IDENTITY) + 1] !== PLAN_ENUMS.NO) {
-      CSData.basicInfo.customer.aboriginalIdentity = textArray[textArray.indexOf(PLAN_ENUMS.ABORIGINAL_IDENTITY) + 1];
+    const aboriginalIdentity = getTextByKeyword(textArray, PLAN_ENUMS.ABORIGINAL_IDENTITY, PLAN_ENUMS.ABORIGINAL_RACE);
+    if (aboriginalIdentity !== PLAN_ENUMS.NO) {
+      CSData.basicInfo.customer.aboriginalIdentity = aboriginalIdentity;
     }
-    if (textArray[textArray.indexOf(PLAN_ENUMS.ABORIGINAL_RACE) + 1] !== '') {
-      CSData.basicInfo.customer.aboriginalRace = textArray[textArray.indexOf(PLAN_ENUMS.ABORIGINAL_RACE) + 1];
+    const aboriginalRace = getTextByKeyword(textArray, PLAN_ENUMS.ABORIGINAL_RACE, PLAN_ENUMS.GENDER);
+    if (aboriginalRace !== '') {
+      CSData.basicInfo.customer.aboriginalRace = aboriginalRace;
     }
     const bmiIndex = textArray.indexOf(PLAN_ENUMS.BMI);
     const bmi = textArray[bmiIndex + 1];
@@ -416,11 +422,11 @@ class HTMLParser {
     }
     CSData.basicInfo.customer.level = planUpdateCustomerLevel || customerLevel;
 
-    CSData.basicInfo.customer.employment = getImportHtmlData(textArray, PLAN_ENUMS.EMPLOYMENT, PLAN_ENUMS.EMPLOYMENT_INTENTION);
-    CSData.basicInfo.customer.employmentIntention = getImportHtmlData(textArray, PLAN_ENUMS.EMPLOYMENT_INTENTION, PLAN_ENUMS.CURRENT_LIVING_INSTITUTION);
-    CSData.basicInfo.customer.hospitalized = textArray[textArray.indexOf(PLAN_ENUMS.HOSPITALIZED) + 1];
-    CSData.basicInfo.customer.hireCare = textArray[textArray.indexOf(PLAN_ENUMS.HIRE_CARE) + 1];
-    CSData.basicInfo.customer.hireCareNum = parseInt(textArray[textArray.indexOf(PLAN_ENUMS.HIRE_CARE_NUM) + 1], 10);
+    CSData.basicInfo.customer.employment = getTextByKeyword(textArray, PLAN_ENUMS.EMPLOYMENT, PLAN_ENUMS.EMPLOYMENT_INTENTION);
+    CSData.basicInfo.customer.employmentIntention = getTextByKeyword(textArray, PLAN_ENUMS.EMPLOYMENT_INTENTION, PLAN_ENUMS.CURRENT_LIVING_INSTITUTION);
+    CSData.basicInfo.customer.hospitalized = getTextByKeyword(textArray, PLAN_ENUMS.HOSPITALIZED, PLAN_ENUMS.HIRE_CARE);
+    CSData.basicInfo.customer.hireCare = getTextByKeyword(textArray, PLAN_ENUMS.HIRE_CARE, PLAN_ENUMS.HIRE_CARE_NUM);
+    CSData.basicInfo.customer.hireCareNum = parseInt(getTextByKeyword(textArray, PLAN_ENUMS.HIRE_CARE_NUM, PLAN_ENUMS.DISEASE), 10);
     if (textArray[textArray.indexOf(PLAN_ENUMS.DISEASE) + 1] === PLAN_ENUMS.YES) {
       CSData.basicInfo.customer.disease = textArray[textArray.indexOf(PLAN_ENUMS.DISEASE) + 2].slice(6);
     } else {
@@ -434,10 +440,10 @@ class HTMLParser {
     }
     CSData.basicInfo.customer.serviceItem.sort();
 
-    let handicap = textArray[textArray.indexOf(PLAN_ENUMS.HANDICAP) + 1];
+    let handicap = getTextByKeyword(textArray, PLAN_ENUMS.HANDICAP, PLAN_ENUMS.AGE);
     handicap = (handicap === PLAN_ENUMS.AGE) ? null : handicap;
     if (!handicap) {
-      handicap = getImportHtmlData(textArray, PLAN_ENUMS.HANDICAP_LEVEL, PLAN_ENUMS.VALID_DATE);
+      handicap = getTextByKeyword(textArray, PLAN_ENUMS.HANDICAP_LEVEL, PLAN_ENUMS.VALID_DATE);
     }
     // 擷取障礙等級
     if (handicap) {
@@ -445,8 +451,8 @@ class HTMLParser {
     }
     CSData.basicInfo.handicapLevel = handicap;
 
-    if (getImportHtmlData(textArray, PLAN_ENUMS.DISABILITY_PROVE, PLAN_ENUMS.NONE)) {
-      CSData.basicInfo.disability.prove = textArray[textArray.indexOf(PLAN_ENUMS.DISABILITY_PROVE) + 1];
+    if (getTextByKeyword(textArray, PLAN_ENUMS.DISABILITY_PROVE, PLAN_ENUMS.NONE)) {
+      CSData.basicInfo.disability.prove = getTextByKeyword(textArray, PLAN_ENUMS.DISABILITY_PROVE, PLAN_ENUMS.ICD);
       const bodySituation = textArray[textArray.indexOf(PLAN_ENUMS.BARRIER_CATEGORY_DESCRIPTION) + 1];
       // 判斷是否為新制
       if (bodySituation.indexOf(`(${PLAN_ENUMS.NEW_SYSTEM}`) !== -1) {
@@ -484,9 +490,9 @@ class HTMLParser {
         }
       } else {
         CSData.basicInfo.disability.system = PLAN_ENUMS.OLD_SYSTEM;
-        CSData.basicInfo.disability.oldBodySituation = getImportHtmlData(textArray, PLAN_ENUMS.BARRIER_CATEGORY_DESCRIPTION, PLAN_ENUMS.HANDICAP_LEVEL);
+        CSData.basicInfo.disability.oldBodySituation = getTextByKeyword(textArray, PLAN_ENUMS.BARRIER_CATEGORY_DESCRIPTION, PLAN_ENUMS.HANDICAP_LEVEL);
       }
-      CSData.basicInfo.disability.level = getImportHtmlData(textArray, PLAN_ENUMS.BARRIER_CATEGORY_DESCRIPTION, PLAN_ENUMS.APPRAISAL_DATE) || PLAN_ENUMS.NORMAL;
+      CSData.basicInfo.disability.level = getTextByKeyword(textArray, PLAN_ENUMS.BARRIER_CATEGORY_DESCRIPTION, PLAN_ENUMS.APPRAISAL_DATE) || PLAN_ENUMS.NORMAL;
     } else {
       CSData.basicInfo.disability.prove = PLAN_ENUMS.NONE;
       CSData.basicInfo.disability.note = PLAN_ENUMS.NONE;
@@ -494,37 +500,37 @@ class HTMLParser {
       CSData.basicInfo.disability.system = PLAN_ENUMS.NEW_SYSTEM;
     }
 
-    CSData.basicInfo.mentionHandicap = textArray[textArray.indexOf(PLAN_ENUMS.MENTAL_DISORDER) + 1];
-    CSData.basicInfo.agent.name = getImportHtmlData(textArray, PLAN_ENUMS.AGENT_NAME, PLAN_ENUMS.AGENT_PERSONAL_ID);
-    CSData.basicInfo.agent.personalId = getImportHtmlData(textArray, PLAN_ENUMS.AGENT_PERSONAL_ID, PLAN_ENUMS.AGENT_PHONE_H);
-    CSData.basicInfo.agent.phoneH = getImportHtmlData(textArray, PLAN_ENUMS.AGENT_PHONE_H, PLAN_ENUMS.AGENT_PHONE_O);
-    CSData.basicInfo.agent.phoneO = getImportHtmlData(textArray, PLAN_ENUMS.AGENT_PHONE_O, PLAN_ENUMS.AGENT_MOBILE);
-    CSData.basicInfo.agent.phoneC = getImportHtmlData(textArray, PLAN_ENUMS.AGENT_MOBILE, PLAN_ENUMS.AGENT_RELATION);
-    CSData.basicInfo.agent.relation = textArray[textArray.indexOf(PLAN_ENUMS.AGENT_RELATION) + 1];
-    CSData.basicInfo.agent.relationNote = getImportHtmlData(textArray, PLAN_ENUMS.AGENT_RELATION, PLAN_ENUMS.AGENT_EMAIL, 3);
-    CSData.basicInfo.agent.email = getImportHtmlData(textArray, PLAN_ENUMS.AGENT_EMAIL, PLAN_ENUMS.AGENT_ADDRESS);
+    CSData.basicInfo.mentionHandicap = getTextByKeyword(textArray, PLAN_ENUMS.MENTAL_DISORDER, PLAN_ENUMS.BA12_USE);
+    CSData.basicInfo.agent.name = getTextByKeyword(textArray, PLAN_ENUMS.AGENT_NAME, PLAN_ENUMS.AGENT_PERSONAL_ID);
+    CSData.basicInfo.agent.personalId = getTextByKeyword(textArray, PLAN_ENUMS.AGENT_PERSONAL_ID, PLAN_ENUMS.AGENT_PHONE_H);
+    CSData.basicInfo.agent.phoneH = getTextByKeyword(textArray, PLAN_ENUMS.AGENT_PHONE_H, PLAN_ENUMS.AGENT_PHONE_O);
+    CSData.basicInfo.agent.phoneO = getTextByKeyword(textArray, PLAN_ENUMS.AGENT_PHONE_O, PLAN_ENUMS.AGENT_MOBILE);
+    CSData.basicInfo.agent.phoneC = getTextByKeyword(textArray, PLAN_ENUMS.AGENT_MOBILE, PLAN_ENUMS.AGENT_RELATION);
+    CSData.basicInfo.agent.relation = getTextByKeyword(textArray, PLAN_ENUMS.AGENT_RELATION, PLAN_ENUMS.OTHER_RELATION_DESCRIPTION);
+    CSData.basicInfo.agent.relationNote = getTextByKeyword(textArray, PLAN_ENUMS.AGENT_RELATION, PLAN_ENUMS.AGENT_EMAIL, 3);
+    CSData.basicInfo.agent.email = getTextByKeyword(textArray, PLAN_ENUMS.AGENT_EMAIL, PLAN_ENUMS.AGENT_ADDRESS);
     const agentAddress = textArray[textArray.indexOf(PLAN_ENUMS.AGENT_ADDRESS) + 1]
       + (textArray[textArray.indexOf(PLAN_ENUMS.AGENT_ADDRESS) + 2] !== '' ? textArray[textArray.indexOf(PLAN_ENUMS.AGENT_ADDRESS) + 2] : '');
     CSData.basicInfo.agent.address = agentAddress;
 
-    CSData.basicInfo.contact.name = getImportHtmlData(textArray, PLAN_ENUMS.CONTACT_NAME, PLAN_ENUMS.CONTACT_PHONE_H);
-    CSData.basicInfo.contact.phoneH = getImportHtmlData(textArray, PLAN_ENUMS.CONTACT_PHONE_H, PLAN_ENUMS.CONTACT_PHONE_O);
-    CSData.basicInfo.contact.phoneO = getImportHtmlData(textArray, PLAN_ENUMS.CONTACT_PHONE_O, PLAN_ENUMS.CONTACT_MOBILE);
-    CSData.basicInfo.contact.phoneC = getImportHtmlData(textArray, PLAN_ENUMS.CONTACT_MOBILE, PLAN_ENUMS.CONTACT_RELATION);
-    CSData.basicInfo.contact.relation = textArray[textArray.indexOf(PLAN_ENUMS.CONTACT_RELATION) + 1];
-    CSData.basicInfo.contact.relationNote = getImportHtmlData(textArray, PLAN_ENUMS.CONTACT_RELATION, PLAN_ENUMS.CONTACT_EMAIL, 3);
-    CSData.basicInfo.contact.email = getImportHtmlData(textArray, PLAN_ENUMS.CONTACT_EMAIL, PLAN_ENUMS.CONTACT_ADDRESS);
+    CSData.basicInfo.contact.name = getTextByKeyword(textArray, PLAN_ENUMS.CONTACT_NAME, PLAN_ENUMS.CONTACT_PHONE_H);
+    CSData.basicInfo.contact.phoneH = getTextByKeyword(textArray, PLAN_ENUMS.CONTACT_PHONE_H, PLAN_ENUMS.CONTACT_PHONE_O);
+    CSData.basicInfo.contact.phoneO = getTextByKeyword(textArray, PLAN_ENUMS.CONTACT_PHONE_O, PLAN_ENUMS.CONTACT_MOBILE);
+    CSData.basicInfo.contact.phoneC = getTextByKeyword(textArray, PLAN_ENUMS.CONTACT_MOBILE, PLAN_ENUMS.CONTACT_RELATION);
+    CSData.basicInfo.contact.relation = getTextByKeyword(textArray, PLAN_ENUMS.CONTACT_RELATION, PLAN_ENUMS.OTHER_RELATION_DESCRIPTION);
+    CSData.basicInfo.contact.relationNote = getTextByKeyword(textArray, PLAN_ENUMS.CONTACT_RELATION, PLAN_ENUMS.CONTACT_EMAIL, 3);
+    CSData.basicInfo.contact.email = getTextByKeyword(textArray, PLAN_ENUMS.CONTACT_EMAIL, PLAN_ENUMS.CONTACT_ADDRESS);
     const contactAddress = textArray[textArray.indexOf(PLAN_ENUMS.CONTACT_ADDRESS) + 1]
       + (textArray[textArray.indexOf(PLAN_ENUMS.CONTACT_ADDRESS) + 2] !== '' ? textArray[textArray.indexOf(PLAN_ENUMS.CONTACT_ADDRESS) + 2] : '');
     CSData.basicInfo.contact.address = contactAddress;
 
     // 教育程度
-    CSData.basicInfo.education = textArray[textArray.indexOf(PLAN_ENUMS.EDUCATION) + 1];
+    CSData.basicInfo.education = getTextByKeyword(textArray, PLAN_ENUMS.EDUCATION, PLAN_ENUMS.CASE_LEVEL);
 
-    CSData.takeCarePlan.planType = textArray[textArray.indexOf(PLAN_ENUMS.PLAN_CATEGORY) + 1];
-    CSData.takeCarePlan.writeOff = textArray[textArray.indexOf(PLAN_ENUMS.WRITE_OFF) + 1];
-    CSData.takeCarePlan.evaluateDate = textArray[textArray.indexOf(PLAN_ENUMS.EVALUATE_DATE) + 1];
-    CSData.takeCarePlan.disabilityProve = textArray[textArray.indexOf(`${PLAN_ENUMS.IS_DISABILITY_PROVE})`) + 1];
+    CSData.takeCarePlan.planType = getTextByKeyword(textArray, PLAN_ENUMS.PLAN_CATEGORY, PLAN_ENUMS.LONG_CARE_STATUS);
+    CSData.takeCarePlan.writeOff = getTextByKeyword(textArray, PLAN_ENUMS.WRITE_OFF, PLAN_ENUMS.EVALUATE_DATE);
+    CSData.takeCarePlan.evaluateDate = getTextByKeyword(textArray, PLAN_ENUMS.EVALUATE_DATE, `${PLAN_ENUMS.IS_DISABILITY_PROVE})`);
+    CSData.takeCarePlan.disabilityProve = getTextByKeyword(textArray, `${PLAN_ENUMS.IS_DISABILITY_PROVE})`, PLAN_ENUMS.DISCHARGE_EVALUATE);
 
     // 是否有A個管服務
     if (textArray[textArray.indexOf(`${PLAN_ENUMS.A_CARE_TAKER_SERVICE}`) + 1]) {
@@ -555,8 +561,8 @@ class HTMLParser {
         CSData.takeCarePlan.bundled.quota = parseInt(StringUtil.getMatchText(bundledText, /\d+/g), 10);
         CSData.takeCarePlan.bundled.allowance = parseInt(StringUtil.getMatchText(bundledText, /\d+/g, 1), 10);
         CSData.takeCarePlan.bundled.pays = parseInt(StringUtil.getMatchText(bundledText, /\d+/g, 3), 10);
-        CSData.takeCarePlan.bundled.priceType = textArray[textArray.indexOf(PLAN_ENUMS.PRICE_CATEGORY) + 1];
-        CSData.takeCarePlan.bundled.workerCare = getImportHtmlData(textArray, PLAN_ENUMS.ALLOWANCE, PLAN_ENUMS.INTERFACE_NOTE);
+        CSData.takeCarePlan.bundled.priceType = getTextByKeyword(textArray, PLAN_ENUMS.PRICE_CATEGORY, PLAN_ENUMS.ALLOWANCE);
+        CSData.takeCarePlan.bundled.workerCare = getTextByKeyword(textArray, PLAN_ENUMS.ALLOWANCE, PLAN_ENUMS.INTERFACE_NOTE);
         break;
       }
     }
@@ -572,48 +578,48 @@ class HTMLParser {
       }
     }
 
-    if (getImportHtmlData(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_ONE, PLAN_ENUMS.APPROVAL_STATUS, 3)) {
+    if (getTextByKeyword(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_ONE, PLAN_ENUMS.APPROVAL_STATUS, 3)) {
       // 如有填寫狀態時
       let date = null;
-      const status = getImportHtmlData(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_ONE, PLAN_ENUMS.APPROVAL_DATE, 5);
+      const status = getTextByKeyword(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_ONE, PLAN_ENUMS.APPROVAL_DATE, 5);
       if (status) {
-        let signTimeStr = getImportHtmlData(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_ONE, PLAN_ENUMS.APPROVAL_CONTENT, 7);
+        let signTimeStr = getTextByKeyword(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_ONE, PLAN_ENUMS.APPROVAL_CONTENT, 7);
         if (signTimeStr) {
           signTimeStr = signTimeStr.split('/');
           date = moment(`${parseInt(signTimeStr[0], 10) + 1911}-${signTimeStr[1]}-${signTimeStr[2]}`, dateFormat).toDate();
         }
       }
       CSData.takeCarePlan.signSupervisor.push({
-        name: getImportHtmlData(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_ONE, PLAN_ENUMS.APPROVAL_STATUS, 3),
+        name: getTextByKeyword(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_ONE, PLAN_ENUMS.APPROVAL_STATUS, 3),
         status,
         date,
       });
-      if (getImportHtmlData(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_TWO, PLAN_ENUMS.APPROVAL_STATUS, 2)) {
+      if (getTextByKeyword(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_TWO, PLAN_ENUMS.APPROVAL_STATUS, 2)) {
         // 如有填寫狀態時
         let statusDate = null;
-        const signStatus = getImportHtmlData(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_TWO, PLAN_ENUMS.APPROVAL_DATE, 4);
+        const signStatus = getTextByKeyword(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_TWO, PLAN_ENUMS.APPROVAL_DATE, 4);
         if (signStatus) {
-          let signTimeStr = getImportHtmlData(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_TWO, PLAN_ENUMS.APPROVAL_CONTENT, 6);
+          let signTimeStr = getTextByKeyword(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_TWO, PLAN_ENUMS.APPROVAL_CONTENT, 6);
           if (signTimeStr) {
             signTimeStr = signTimeStr.split('/');
             statusDate = moment(`${parseInt(signTimeStr[0], 10) + 1911}-${signTimeStr[1]}-${signTimeStr[2]}`, dateFormat).toDate();
           }
         }
         CSData.takeCarePlan.signSupervisor.push({
-          name: getImportHtmlData(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_TWO, PLAN_ENUMS.APPROVAL_STATUS, 2),
+          name: getTextByKeyword(textArray, PLAN_ENUMS.SIGN_SUPERVISOR_TWO, PLAN_ENUMS.APPROVAL_STATUS, 2),
           signStatus,
           statusDate,
         });
       }
     }
 
-    CSData.evaluation.helper.primaryName = textArray[textArray.indexOf(PLAN_ENUMS.HELPER_PRIMARY_NAME) + 1];
+    CSData.evaluation.helper.primaryName = getTextByKeyword(textArray, PLAN_ENUMS.HELPER_PRIMARY_NAME, PLAN_ENUMS.HELPER_PRIMARY_RELATION);
     CSData.evaluation.helper.primaryRelation = StringUtil.getMatchText(textArray[textArray.indexOf(PLAN_ENUMS.HELPER_PRIMARY_RELATION) + 1], /[^.]\D$/g);
     CSData.evaluation.helper.primaryGender = StringUtil.getMatchText(textArray[textArray.indexOf(PLAN_ENUMS.HELPER_PRIMARY_GENDER) + 1], /\D$/g);
     CSData.evaluation.helper.primaryAge = parseInt(StringUtil.getMatchText(textArray[textArray.indexOf(PLAN_ENUMS.HELPER_PRIMARY_AGE) + 1], /\d+/g), 10);
-    if (textArray[textArray.indexOf(PLAN_ENUMS.HELPER_SECONDARY_NAME) + 1] !== PLAN_ENUMS.HELPER_SECONDARY_RELATION
-      && textArray[textArray.indexOf(PLAN_ENUMS.HELPER_SECONDARY_NAME) + 1] !== PLAN_ENUMS.NONE) {
-      CSData.evaluation.helper.secondaryName = textArray[textArray.indexOf(PLAN_ENUMS.HELPER_SECONDARY_NAME) + 1];
+    const secondaryName = getTextByKeyword(textArray, PLAN_ENUMS.HELPER_SECONDARY_NAME, PLAN_ENUMS.HELPER_SECONDARY_RELATION);
+    if (secondaryName !== PLAN_ENUMS.HELPER_SECONDARY_RELATION && secondaryName !== PLAN_ENUMS.NONE) {
+      CSData.evaluation.helper.secondaryName = secondaryName;
       CSData.evaluation.helper.secondaryRelation = StringUtil.getMatchText(textArray[textArray.indexOf(PLAN_ENUMS.HELPER_SECONDARY_RELATION) + 1], /[^.]\D$/);
     }
     // 情緒及行為型態
@@ -770,10 +776,7 @@ class HTMLParser {
     CSData.evaluation.IADLs.push({ title: textArray[dataIndex], val: textArray[dataIndex + 1] });
 
     // 擷取出院準備醫院
-    const dischargeHospital = textArray[textArray.indexOf(PLAN_ENUMS.DISCHARGE_HOSPITAL) + 1];
-    if (dischargeHospital !== PLAN_ENUMS.NO_WILLMENT) {
-      CSData.takeCarePlan.dischargeHospital = dischargeHospital;
-    }
+    CSData.takeCarePlan.dischargeHospital = getTextByKeyword(textArray, PLAN_ENUMS.DISCHARGE_HOSPITAL, PLAN_ENUMS.NO_WILLMENT);
 
     return casePlanObject;
   }
